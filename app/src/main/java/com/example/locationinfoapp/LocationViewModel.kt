@@ -6,13 +6,18 @@ import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.util.Log
+import androidx.compose.runtime.MutableState
+import androidx.compose.runtime.mutableStateOf
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
 import com.google.android.gms.location.*
-import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.osmdroid.util.GeoPoint
 import org.osmdroid.views.MapView
 import java.io.File
@@ -44,7 +49,6 @@ class LocationViewModel(
         LocationServices.getFusedLocationProviderClient(context)
     }
 
-
     private val locationRequest: LocationRequest by lazy {
         LocationRequest.create().apply {
             interval = 10000
@@ -53,20 +57,26 @@ class LocationViewModel(
         }
     }
 
-    fun getRealCurrentLocation() {
-        if (ContextCompat.checkSelfPermission(
-                context,
-                Manifest.permission.ACCESS_FINE_LOCATION
-            ) == PackageManager.PERMISSION_GRANTED
-        ) {
-            fusedLocationClient.lastLocation.addOnSuccessListener { location ->
-                location?.let {
-                    _currentLocation.value = GeoPoint(it.latitude, it.longitude)
-                    _latitude.value = "%.6f".format(it.latitude)
-                    _longitude.value = "%.6f".format(it.longitude)
+    val placesList : MutableState<List<SavedLocation>> = mutableStateOf(emptyList())
+    var addressDetails = mutableStateOf<AddressData?>(null)
+
+    fun getRealCurrentLocation(onLocationFound : (GeoPoint) -> Unit) {
+        if (hasLocationPermission()) {
+            try {
+                fusedLocationClient.lastLocation.addOnSuccessListener { location ->
+                    location?.let {
+                        val geoPoint = GeoPoint(it.latitude, it.longitude)
+                        _currentLocation.value = geoPoint
+                        _latitude.value = it.latitude.toString()
+                        _longitude.value = it.longitude.toString()
+                        onLocationFound(geoPoint)
+                        reverseGeoCode(context, it.latitude, it.longitude)
+                    }
+                }.addOnFailureListener { e ->
+                    Log.e("Location", "Error getting location", e)
                 }
-            }.addOnFailureListener { e ->
-                Log.e("Location", "Error getting location", e)
+            } catch (e: SecurityException) {
+                Log.e("Location", "Permission Error", e)
             }
         }
     }
@@ -130,17 +140,24 @@ class LocationViewModel(
         fusedLocationClient.removeLocationUpdates(locationCallback)
     }
 
-    fun getCurrentLocation() {
+    fun getCurrentLocation(onLocationFound: (GeoPoint) -> Unit) {
         if (hasLocationPermission()) {
             try {
                 fusedLocationClient.lastLocation.addOnSuccessListener { location ->
                     location?.let {
-                        _currentLocation.value = GeoPoint(it.latitude,
-                            it.longitude)
+                        val point = GeoPoint(it.latitude, it.longitude)
+                        _currentLocation.value = point // Update flow
+
+                        _latitude.value = it.latitude.toString()
+                        _longitude.value = it.longitude.toString()
+
+                        onLocationFound(point)
+
+                        reverseGeoCode(context, it.latitude, it.longitude)
                     }
                 }
             } catch (e: SecurityException) {
-                // Handle permission exception
+                Log.e("Location", "Permission Error", e)
             }
         }
     }
@@ -205,21 +222,26 @@ class LocationViewModel(
     }
 
     suspend fun saveCurrentLocation(mapView: MapView?, address: String? = null) {
-        currentLocation.value?.let { point ->
-            val thumbnailPath = captureMapThumbnail(point, mapView)
-            val location = SavedLocation(
-                latitude = point.latitude,
-                longitude = point.longitude,
-                thumbnailPath = thumbnailPath,
-                address = address
-            )
-            locationDao.insert(location)
-        }
+        val lat = _latitude.value.toDoubleOrNull() ?: 0.0
+        val lng = _longitude.value.toDoubleOrNull() ?: 0.0
+        val details = addressDetails.value
+
+        val location = SavedLocation(
+            latitude = lat,
+            longitude = lng,
+            thumbnailPath = null,
+            address = details?.fullAddress ?: "Marked Location",
+            fullAddress = details?.fullAddress ?: "Marked Location",
+            range = 15f,
+           placeName = details?.placeName ?: "Marked Location",
+            placeType = details?.placeType ?: "Point of Interest",
+            region = details?.region ?: "Unknown Region"
+        )
+        locationDao.insert(location)
     }
 
-    fun getAllSavedLocations(): Flow<List<SavedLocation>> {
-        return locationDao.getAllLocations()
-    }
+    fun getAllSavedLocations() = locationDao.getAllLocations()
+
 
     suspend fun deleteLocation(location: SavedLocation) {
         locationDao.delete(location)
@@ -243,4 +265,73 @@ class LocationViewModel(
             null
         }
     }
+    fun fetchPlaces() {
+        val currentLat = _latitude.value.toDoubleOrNull() ?: 17.3850
+        val currentLng = _longitude.value.toDoubleOrNull() ?: 78.4867
+
+        viewModelScope.launch {
+            try {
+                Log.d("Location", "Calling API with: $currentLat, $currentLng")
+
+                val response = withContext(Dispatchers.IO) {
+                    RetrofitInstance.api.getNearbyPlaces(currentLat, currentLng)
+                }
+
+                Log.d("Location", "API Success! Found ${response.count} places")
+
+                val mappedList = response.places.mapIndexed { index, place ->
+                    val offset = (index * 0.001)
+
+                    SavedLocation(
+                        latitude = currentLat + offset,
+                        longitude = currentLng + offset,
+                        placeName = place.placeName,
+                        placeType = place.placeType,
+                        region = place.region,
+                        fullAddress = "${place.region}, ${place.placeType}",
+                        range = 0f,
+                        thumbnailPath = null
+                    )
+                }
+
+                placesList.value = mappedList
+
+            } catch (e: Exception) {
+                Log.e("Location", "API Failed: ${e.message}", e)
+            }
+        }
+    }
+    fun calculateDistance(userLat: Double, userLong: Double, placeLat: Double, placeLong: Double): String {
+        val results = FloatArray(1)
+        android.location.Location.distanceBetween(userLat, userLong, placeLat, placeLong, results)
+        val distanceInKm = results[0] / 1000
+        return String.format("%.2f KM", distanceInKm)
+    }
+    fun reverseGeoCode(context: Context, latitude: Double, longitude: Double){
+        addressDetails.value = null
+        viewModelScope.launch(Dispatchers.IO){
+            try
+            {
+                val geocoder = android.location.Geocoder(context , java.util.Locale.getDefault())
+                if (latitude in -90.0..90.0 && longitude in -180.0..180.0) {
+                    val addresses = geocoder.getFromLocation(latitude, longitude, 1)
+                    if (!addresses.isNullOrEmpty()) {
+                        val address = addresses[0]
+                        withContext(Dispatchers.IO) {
+                            addressDetails.value = AddressData(
+                                placeName = address.featureName ?: "Selected Location",
+                                placeType = if (address.subThoroughfare != null) "Residential/Business" else "Area",
+                                region = address.locality ?: address.adminArea ?: "Unknown",
+                                fullAddress = address.getAddressLine(0) ?: "Unknown Address"
+
+                            )
+                        }
+                    }
+                }
+            }catch (e: Exception){
+                Log.e("Location" , "Error in reverse geocoding")
+            }
+        }
+    }
+
 }

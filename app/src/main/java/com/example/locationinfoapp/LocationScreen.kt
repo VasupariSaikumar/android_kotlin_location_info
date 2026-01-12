@@ -1,9 +1,8 @@
 package com.example.locationinfoapp
 
-import android.util.Log
-import android.view.ViewTreeObserver
 import android.widget.Toast
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.History
@@ -12,22 +11,17 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.viewinterop.AndroidView
-import androidx.compose.ui.zIndex
-import kotlinx.coroutines.delay
+import com.google.android.gms.maps.CameraUpdateFactory
+import com.google.android.gms.maps.model.CameraPosition
+import com.google.android.gms.maps.model.LatLng
+import com.google.maps.android.compose.*
 import kotlinx.coroutines.launch
-import org.osmdroid.events.MapListener
-import org.osmdroid.events.ScrollEvent
-import org.osmdroid.events.ZoomEvent
-import org.osmdroid.tileprovider.tilesource.TileSourceFactory
-import org.osmdroid.util.GeoPoint
-import org.osmdroid.views.MapView
-import org.osmdroid.views.overlay.Marker
-import kotlin.math.abs
+import androidx.compose.material.icons.filled.Refresh
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -37,200 +31,191 @@ fun LocationScreen(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
-    val currentLocation by viewModel.currentLocation.collectAsState()
+    val coroutineScope = rememberCoroutineScope()
     val latitudeText by viewModel.latitude.collectAsState()
     val longitudeText by viewModel.longitude.collectAsState()
-    val isMapMoving by viewModel.isMapMoving.collectAsState()
-    val coroutineScope = rememberCoroutineScope()
-    var mapViewRef by remember { mutableStateOf<MapView?>(null) }
-
-    fun shouldUpdateMap(newPoint: GeoPoint, currentCenter: GeoPoint): Boolean {
-        return newPoint.distanceToAsDouble(currentCenter) > 10 // 10 meter threshold
+    val places by viewModel.placesList
+    val addressInfo by viewModel.addressDetails
+    val currentLocation by viewModel.currentLocation.collectAsState()
+    var markerPosition by remember { mutableStateOf<LatLng?>(null) }
+    var isRequestingCurrentLocation by remember { mutableStateOf(false) }
+    val cameraPositionState = rememberCameraPositionState {
+        position = CameraPosition.fromLatLngZoom(LatLng(17.3850, 78.4867), 15f)
     }
 
-    var mapView by remember { mutableStateOf<MapView?>(null) }
+    LaunchedEffect(Unit) {
+        viewModel.fetchPlaces()
+    }
+
+    LaunchedEffect(currentLocation) {
+        if (isRequestingCurrentLocation && currentLocation != null) {
+            val userLocation = currentLocation!!
+            val newPos = LatLng(userLocation.latitude, userLocation.longitude)
+
+            markerPosition = newPos
+           // cameraPositionState.animate(CameraUpdateFactory.newLatLngZoom(newPos, 15f))
+            cameraPositionState.position = CameraPosition.fromLatLngZoom(newPos, 15f)
+            isRequestingCurrentLocation = false
+        }
+    }
+
 
     Scaffold(
         modifier = modifier,
-        topBar = {
-            CenterAlignedTopAppBar(
-                title = { Text("Location Finder") }
-            )
-        },
-        floatingActionButton = {
-            Column {
-                FloatingActionButton(
-                    onClick = {
-                        Toast.makeText(context, "Saved Location!",
-                            Toast.LENGTH_SHORT).show()
-                        coroutineScope.launch {
-                            viewModel.saveCurrentLocation(mapViewRef)
+        topBar = { CenterAlignedTopAppBar(title = { Text("Location Finder") },
+            actions = {
+                IconButton(onClick = {
+                    Toast.makeText(context , "Refreshing API... ", Toast.LENGTH_SHORT).show()
+                    viewModel.fetchPlaces()
+                }) {
+                    Icon(Icons.Default.Refresh , contentDescription = "Refresh Icon")
+                }
+            }
+            ) }
+    ) { innerPadding ->
+        Box(modifier = Modifier.fillMaxSize().padding(innerPadding)) {
+            GoogleMap(
+                modifier = Modifier.fillMaxSize(),
+                cameraPositionState = cameraPositionState
+            ) {
+                places.forEach { place ->
+                    Marker(
+                        state = rememberMarkerState(position = LatLng(place.latitude, place.longitude)),
+                        title = place.placeName,
+                        snippet = place.placeType
+                    )
+                }
+                markerPosition?.let { pos ->
+                    // Use key to force marker recreation when position changes
+                    key(pos.latitude, pos.longitude) {
+                        val markerState = rememberMarkerState(position = pos)
+
+                        LaunchedEffect(addressInfo) {
+                            if (addressInfo != null) markerState.showInfoWindow()
+                        }
+
+                        MarkerInfoWindowContent(
+                            state = markerState,
+                            onClick = {
+                                viewModel.reverseGeoCode(context, pos.latitude, pos.longitude)
+                                markerState.showInfoWindow()
+                                false
+                            }
+                        ) {
+                            AddressDetailsCard(addressInfo, pos.latitude, pos.longitude, currentLocation, viewModel)
                         }
                     }
-                ) {
-                    Icon(Icons.Default.Save, contentDescription = "Save location")
                 }
-                Spacer(modifier = Modifier.height(8.dp))
+            }
+            Card(
+                modifier = Modifier.fillMaxWidth().padding(16.dp).align(Alignment.TopCenter),
+                elevation = CardDefaults.cardElevation(8.dp)
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(
+                            value = latitudeText,
+                            onValueChange = { viewModel.updateCoordinates(it, longitudeText) },
+                            label = { Text("Lat") },
+                            modifier = Modifier.weight(1f),
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                        )
+                        OutlinedTextField(
+                            value = longitudeText,
+                            onValueChange = { viewModel.updateCoordinates(latitudeText, it) },
+                            label = { Text("Long") },
+                            modifier = Modifier.weight(1f),
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(
+                            onClick = {
+                                viewModel.getCurrentLocation { geoPoint ->
+                                    val newPos = LatLng(geoPoint.latitude, geoPoint.longitude)
+                                    markerPosition = newPos
+                                    coroutineScope.launch {
+                                        cameraPositionState.animate(CameraUpdateFactory.newLatLngZoom(newPos, 15f))
+                                    }
+                                }
+                            },
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("Current")
+                        }
+                        Button(onClick = {
+                            val lat = latitudeText.toDoubleOrNull()
+                            val lng = longitudeText.toDoubleOrNull()
+                            if (lat != null && lng != null) {
+                                val target = LatLng(lat, lng)
+                                markerPosition = target
+
+                                coroutineScope.launch {
+                                    cameraPositionState.animate(CameraUpdateFactory.newLatLngZoom(target, 15f))
+                                    viewModel.reverseGeoCode(context, lat, lng)
+                                }
+                            }
+                        },
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("Go To Location")
+                        }
+                    }
+                }
+            }
+
+            // FABs in bottom-left corner to avoid overlapping map zoom controls
+            Column(
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .padding(16.dp),
+                horizontalAlignment = Alignment.Start
+            ) {
                 FloatingActionButton(
-                    onClick = onShowHistory
+                    onClick = {
+                        Toast.makeText(context, "Saved Location!", Toast.LENGTH_SHORT).show()
+                        coroutineScope.launch { viewModel.saveCurrentLocation(null) }
+                    }
                 ) {
-                    Icon(Icons.Default.History, contentDescription = "View history")
+                    Icon(Icons.Default.Save, contentDescription = "Save")
+                }
+                Spacer(modifier = Modifier.height(12.dp))
+                FloatingActionButton(onClick = onShowHistory) {
+                    Icon(Icons.Default.History, contentDescription = "History")
                 }
             }
         }
-    ) { innerPadding ->
-        Box(modifier = Modifier.fillMaxSize()) {
-            AndroidView(
-                factory = { ctx ->
-                    MapView(ctx).apply {
-                        mapViewRef = this
-                        setTileSource(TileSourceFactory.MAPNIK)
-                        setMultiTouchControls(true)
-                        minZoomLevel = 3.0
-                        maxZoomLevel = 19.0
-                        controller.setZoom(15.0)
+    }
+}
 
-                        addMapListener(object : MapListener {
-                            override fun onScroll(event: ScrollEvent?): Boolean {
-                                if (!viewModel.isManualUpdate.value) {
-                                    viewModel.setMapMoving(true)
-                                    event?.source?.mapCenter?.let { center ->
-                                        viewModel.updateMapCenter(GeoPoint(center.latitude,
-                                            center.longitude))
-                                    }
-                                }
-                                return true
-                            }
+@Composable
+fun AddressDetailsCard(
+    addressInfo: AddressData?,
+    lat: Double,
+    lng: Double,
+    currentLoc:org.osmdroid.util.GeoPoint?,
+    viewModel: LocationViewModel
+) {
+    Card(
+        modifier = Modifier.width(220.dp).padding(4.dp),
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(containerColor = Color.White),
+        elevation = CardDefaults.cardElevation(6.dp)
+    ) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            if (addressInfo == null) {
+                Text("Fetching Details...", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+            } else {
+                Text(text = "Name: ${addressInfo.placeName}", fontWeight = FontWeight.Bold)
+                Text(text = "Type: ${addressInfo.placeType}", style = MaterialTheme.typography.labelSmall)
+                Text(text = "Region: ${addressInfo.region}", style = MaterialTheme.typography.labelSmall)
+                Text(text = "Address: ${addressInfo.fullAddress}", style = MaterialTheme.typography.bodySmall, color = Color.DarkGray)
 
-                            override fun onZoom(event: ZoomEvent?): Boolean {
-                                if (!viewModel.isManualUpdate.value) {
-                                    viewModel.setMapMoving(true)
-                                    event?.source?.mapCenter?.let { center ->
-                                        viewModel.updateMapCenter(GeoPoint(center.latitude,
-                                            center.longitude))
-                                    }
-                                }
-                                return true
-                            }
-                        })
-
-                        viewTreeObserver.addOnGlobalLayoutListener(
-                            object : ViewTreeObserver.OnGlobalLayoutListener {
-                                override fun onGlobalLayout() {
-                                    if (!isMapMoving) {
-                                        val center = GeoPoint(mapCenter.latitude,
-                                            mapCenter.longitude)
-                                        viewModel.onMapIdle(center)
-                                    }
-                                    viewTreeObserver.removeOnGlobalLayoutListener(this)
-                                }
-                            }
-                        )
-                    }.also { mapView = it }
-                },
-                modifier = Modifier
-                    .fillMaxSize()
-                    .zIndex(-1f),
-                update = { mapView ->
-                    currentLocation?.let { geoPoint ->
-                        // Verify the received coordinates
-                        if (abs(geoPoint.latitude - mapView.mapCenter.latitude) > 0.00001 ||
-                            abs(geoPoint.longitude - mapView.mapCenter.longitude) > 0.00001) {
-
-                            mapView.controller.setCenter(geoPoint)
-                            mapView.overlays.clear()
-                            Marker(mapView).apply {
-                                position = geoPoint
-                                setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
-                                title = "Target Location"
-                                snippet = "${geoPoint.latitude}, ${geoPoint.longitude}"
-                                mapView.overlays.add(this)
-                            }
-                            mapView.invalidate() // Force redraw
-                        }
-                    }
-                }
-            )
-
-            Column(
-                modifier = Modifier
-                    .padding(innerPadding)
-                    .fillMaxWidth()
-            ) {
-                Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
-                    elevation = CardDefaults.cardElevation(8.dp)
-                ) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            OutlinedTextField(
-                                value = latitudeText,
-                                onValueChange = { newLat ->
-                                    viewModel.updateCoordinates(newLat, longitudeText)
-                                },
-                                label = { Text("Latitude") },
-                                modifier = Modifier.weight(1f),
-                                keyboardOptions = KeyboardOptions.Default.copy(
-                                    keyboardType = KeyboardType.Number,
-                                    imeAction = ImeAction.Next
-                                )
-                            )
-                            OutlinedTextField(
-                                value = longitudeText,
-                                onValueChange = { newLon ->
-                                    viewModel.updateCoordinates(latitudeText, newLon)
-                                },
-                                label = { Text("Longitude") },
-                                modifier = Modifier.weight(1f),
-                                keyboardOptions = KeyboardOptions.Default.copy(
-                                    keyboardType = KeyboardType.Number,
-                                    imeAction = ImeAction.Done
-                                )
-                            )
-                        }
-
-                        Spacer(modifier = Modifier.height(16.dp))
-
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(16.dp)
-                        ) {
-                            Button(
-                                onClick = {
-                                    if (viewModel.hasLocationPermission()) {
-                                        viewModel.getRealCurrentLocation()
-                                    }
-                                },
-                                modifier = Modifier.weight(1f)
-                            ) {
-                                Text("Current Location")
-                            }
-                            Button(onClick = {
-                                Log.d("LocationInput",
-                                    "Raw input - Lat: ${viewModel.latitude.value}, " +
-                                            "Lon: ${viewModel.longitude.value}")
-                                viewModel.goToSpecifiedLocation()
-                            }) {
-                                Text("Go to Location")
-                            }
-                        }
-                    }
-                }
-
-                if (isMapMoving) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(bottom = 100.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        // Uncomment to show loading indicator
-                        // CircularProgressIndicator()
-                    }
+                currentLoc?.let { user ->
+                    val dist = viewModel.calculateDistance(user.latitude, user.longitude, lat, lng)
+                  Divider(modifier = Modifier.padding(vertical = 4.dp))
+                    Text(text = "Distance: $dist KM", color = Color.Blue, fontWeight = FontWeight.Bold)
                 }
             }
         }
