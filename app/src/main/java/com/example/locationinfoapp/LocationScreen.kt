@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.FiberManualRecord
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material3.*
@@ -22,6 +23,8 @@ import com.google.android.gms.maps.model.LatLng
 import com.google.maps.android.compose.*
 import kotlinx.coroutines.launch
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Stop
+import com.google.android.gms.maps.model.BitmapDescriptorFactory
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -39,6 +42,10 @@ fun LocationScreen(
     val currentLocation by viewModel.currentLocation.collectAsState()
     var markerPosition by remember { mutableStateOf<LatLng?>(null) }
     var isRequestingCurrentLocation by remember { mutableStateOf(false) }
+
+    val isRecording by viewModel.isRecording.collectAsState()
+    val signalLogs by viewModel.signalLogs.collectAsState(initial = emptyList())
+
     val cameraPositionState = rememberCameraPositionState {
         position = CameraPosition.fromLatLngZoom(LatLng(17.3850, 78.4867), 15f)
     }
@@ -53,13 +60,19 @@ fun LocationScreen(
             val newPos = LatLng(userLocation.latitude, userLocation.longitude)
 
             markerPosition = newPos
-           // cameraPositionState.animate(CameraUpdateFactory.newLatLngZoom(newPos, 15f))
             cameraPositionState.position = CameraPosition.fromLatLngZoom(newPos, 15f)
             isRequestingCurrentLocation = false
         }
     }
 
-
+    // Helper to choose marker color based on dBm
+    fun getSignalColor(dbm: Int): Float {
+        return when {
+            dbm > -90 -> BitmapDescriptorFactory.HUE_GREEN  // Strong Signal
+            dbm > -105 -> BitmapDescriptorFactory.HUE_YELLOW // Fair Signal
+            else -> BitmapDescriptorFactory.HUE_RED          // Weak Signal
+        }
+    }
     Scaffold(
         modifier = modifier,
         topBar = { CenterAlignedTopAppBar(title = { Text("Location Finder") },
@@ -71,7 +84,29 @@ fun LocationScreen(
                     Icon(Icons.Default.Refresh , contentDescription = "Refresh Icon")
                 }
             }
-            ) }
+            )
+        },
+        floatingActionButton = {
+            Column(horizontalAlignment = Alignment.End){
+                ExtendedFloatingActionButton(
+                    onClick = {
+                        val newState = !isRecording
+                        viewModel.toggleRecording(newState)
+                        val msg = if (newState) "Recording Started" else "Recording Stopped"
+                        Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                    },
+                    containerColor = if (isRecording) Color.Red else MaterialTheme.colorScheme.primary,
+                    contentColor = Color.White
+                ) {
+                    Icon(
+                        if (isRecording) Icons.Default.Stop else Icons.Default.FiberManualRecord,
+                        contentDescription = "Record"
+                    )
+                    Spacer(modifier = Modifier.padding(8.dp))
+                    Text(if (isRecording) "Stop Recording" else "Start Recording")
+                }
+            }
+        }
     ) { innerPadding ->
         Box(modifier = Modifier.fillMaxSize().padding(innerPadding)) {
             GoogleMap(
@@ -82,7 +117,17 @@ fun LocationScreen(
                     Marker(
                         state = rememberMarkerState(position = LatLng(place.latitude, place.longitude)),
                         title = place.placeName,
-                        snippet = place.placeType
+                        snippet = place.placeType,
+                        icon = BitmapDescriptorFactory.defaultMarker(BitmapDescriptorFactory.HUE_AZURE)
+                    )
+                }
+                signalLogs.forEach { log ->
+                    Marker(
+                        state = rememberMarkerState(position = LatLng(log.latitude , log.longitude)),
+                        title = "${log.networkType}(${log.signalStrength}dBm)",
+                        snippet = "Recorded at : ${java.text.SimpleDateFormat("HH:mm:ss").format(java.util.Date(log.timestamp))}",
+                        icon = BitmapDescriptorFactory.defaultMarker(getSignalColor(log.signalStrength)),
+                        alpha = 0.8f
                     )
                 }
                 markerPosition?.let { pos ->
@@ -96,6 +141,8 @@ fun LocationScreen(
 
                         MarkerInfoWindowContent(
                             state = markerState,
+                            icon = BitmapDescriptorFactory.defaultMarker(BitmapDescriptorFactory.HUE_RED),
+                            zIndex = 1.0f,
                             onClick = {
                                 viewModel.reverseGeoCode(context, pos.latitude, pos.longitude)
                                 markerState.showInfoWindow()

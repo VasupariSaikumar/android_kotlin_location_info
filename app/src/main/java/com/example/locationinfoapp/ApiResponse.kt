@@ -1,6 +1,5 @@
 package com.example.locationinfoapp
 
-
 data class PlacesResponse(
     val count: Int,
     val places: List<PlaceDto>

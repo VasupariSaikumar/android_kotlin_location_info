@@ -13,6 +13,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.google.android.gms.location.*
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -59,6 +60,15 @@ class LocationViewModel(
 
     val placesList : MutableState<List<SavedLocation>> = mutableStateOf(emptyList())
     var addressDetails = mutableStateOf<AddressData?>(null)
+
+    private val signalManager = SignalManager(context)
+
+    private val _isRecording = MutableStateFlow(false)
+    val isRecording: StateFlow<Boolean> = _isRecording.asStateFlow()
+
+    private var recordingJob: kotlinx.coroutines.Job? = null
+
+    val signalLogs = locationDao.getAllSignalLogs()
 
     fun getRealCurrentLocation(onLocationFound : (GeoPoint) -> Unit) {
         if (hasLocationPermission()) {
@@ -332,6 +342,54 @@ class LocationViewModel(
                 Log.e("Location" , "Error in reverse geocoding")
             }
         }
+    }
+    fun toggleRecording(isStart: Boolean) {
+        if (isStart) {
+            startRecording()
+            startRecording()
+        } else {
+            stopRecording()
+            stopLocationUpdates()
+        }
+    }
+
+    private fun startRecording() {
+        if (_isRecording.value) return
+        _isRecording.value = true
+
+        recordingJob = viewModelScope.launch(Dispatchers.IO) {
+            while (_isRecording.value) {
+                try {
+                    val signal = signalManager.getSignalStrength()
+                    val loc = _currentLocation.value
+
+                    // LOGIC CHECK: Is the GPS awake yet?
+                    if (loc == null) {
+                        Log.w("Recorder", "Waiting for GPS...")
+                    } else if (signal == null) {
+                        Log.w("Recorder", "Signal is null (Sim missing?)")
+                    } else {
+                        val log = SignalLog(
+                            latitude = loc.latitude,
+                            longitude = loc.longitude,
+                            signalStrength = signal.dbm,
+                            networkType = signal.type
+                        )
+                        locationDao.insertSignalLog(log)
+                        Log.d("Recorder", "Saved: ${log.networkType} ${log.signalStrength}dBm")
+                    }
+                } catch (e: Exception) {
+                    Log.e("Recorder", "Error saving log", e)
+                }
+                delay(5000)
+            }
+        }
+    }
+    private fun stopRecording() {
+        _isRecording.value = false
+        recordingJob?.cancel()
+        recordingJob = null
+        Log.d("Recorder", "Recording Stopped")
     }
 
 }
