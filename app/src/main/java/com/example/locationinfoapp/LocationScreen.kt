@@ -45,6 +45,7 @@ fun LocationScreen(
 
     val isRecording by viewModel.isRecording.collectAsState()
     val signalLogs by viewModel.signalLogs.collectAsState(initial = emptyList())
+    val isLoadingPlaces by viewModel.isLoadingPlaces.collectAsState()
 
     val cameraPositionState = rememberCameraPositionState {
         position = CameraPosition.fromLatLngZoom(LatLng(17.3850, 78.4867), 15f)
@@ -150,6 +151,37 @@ fun LocationScreen(
                             }
                         ) {
                             AddressDetailsCard(addressInfo, pos.latitude, pos.longitude, currentLocation, viewModel)
+                        }
+                    }
+                }
+            }
+            
+            // Loading indicator overlay
+            if (isLoadingPlaces) {
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Card(
+                        modifier = Modifier.padding(16.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.95f))
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(24.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            CircularProgressIndicator()
+                            Spacer(modifier = Modifier.height(16.dp))
+                            Text(
+                                text = "Loading places...",
+                                style = MaterialTheme.typography.bodyLarge,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                text = "(This may take 2-3 minutes)",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
                         }
                     }
                 }

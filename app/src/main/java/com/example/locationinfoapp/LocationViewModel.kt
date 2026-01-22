@@ -46,7 +46,7 @@ class LocationViewModel(
     private val _isManualUpdate = MutableStateFlow(false)
     val isManualUpdate: StateFlow<Boolean> = _isManualUpdate.asStateFlow()
 
-    private val fusedLocationClient: FusedLocationProviderClient by lazy {
+    private val  fusedLocationClient: FusedLocationProviderClient by lazy {
         LocationServices.getFusedLocationProviderClient(context)
     }
 
@@ -60,6 +60,10 @@ class LocationViewModel(
 
     val placesList : MutableState<List<SavedLocation>> = mutableStateOf(emptyList())
     var addressDetails = mutableStateOf<AddressData?>(null)
+    
+    // Loading state for API calls
+    private val _isLoadingPlaces = MutableStateFlow(false)
+    val isLoadingPlaces: StateFlow<Boolean> = _isLoadingPlaces.asStateFlow()
 
     private val signalManager = SignalManager(context)
 
@@ -76,7 +80,7 @@ class LocationViewModel(
                 fusedLocationClient.lastLocation.addOnSuccessListener { location ->
                     location?.let {
                         val geoPoint = GeoPoint(it.latitude, it.longitude)
-                        _currentLocation.value = geoPoint
+                         _currentLocation.value = geoPoint
                         _latitude.value = it.latitude.toString()
                         _longitude.value = it.longitude.toString()
                         onLocationFound(geoPoint)
@@ -160,7 +164,6 @@ class LocationViewModel(
 
                         _latitude.value = it.latitude.toString()
                         _longitude.value = it.longitude.toString()
-
                         onLocationFound(point)
 
                         reverseGeoCode(context, it.latitude, it.longitude)
@@ -279,35 +282,57 @@ class LocationViewModel(
         val currentLat = _latitude.value.toDoubleOrNull() ?: 17.3850
         val currentLng = _longitude.value.toDoubleOrNull() ?: 78.4867
 
-        viewModelScope.launch {
-            try {
-                Log.d("Location", "Calling API with: $currentLat, $currentLng")
+        Log.d("Location", "Fetching places for lat=$currentLat, lng=$currentLng")
+        _isLoadingPlaces.value = true
 
-                val response = withContext(Dispatchers.IO) {
-                    RetrofitInstance.api.getNearbyPlaces(currentLat, currentLng)
+        viewModelScope.launch(Dispatchers.IO) {
+           try {
+                val response = RetrofitInstance.api.getNearbyPlaces(currentLat, currentLng)
+                Log.d("Location", "API SUCCESS! Returned ${response.places.size} places")
+                
+                // Log first place to verify data
+                if (response.places.isNotEmpty()) {
+                    val first = response.places.first()
+                    Log.d("Location", "First place: ${first.placeName} at (${first.latitude}, ${first.longitude})")
                 }
 
-                Log.d("Location", "API Success! Found ${response.count} places")
-
-                val mappedList = response.places.mapIndexed { index, place ->
-                    val offset = (index * 0.001)
-
+                // Map API places to SavedLocation - API returns actual coordinates!
+                val mappedList = response.places.map { place ->
                     SavedLocation(
-                        latitude = currentLat + offset,
-                        longitude = currentLng + offset,
+                        latitude = place.latitude,
+                        longitude = place.longitude,
                         placeName = place.placeName,
                         placeType = place.placeType,
-                        region = place.region,
-                        fullAddress = "${place.region}, ${place.placeType}",
-                        range = 0f,
+                        region = "${place.region ?: "Unknown"}, ${place.district ?: "Unknown"}",
+                        fullAddress = "${place.placeName}, ${place.district ?: ""}, ${place.state ?: ""}",
+                        range = (place.distanceKm ?: 0.0).toFloat(),
                         thumbnailPath = null
                     )
                 }
-
-                placesList.value = mappedList
+                
+                Log.d("Location", "Mapped ${mappedList.size} places with REAL coordinates")
+                
+                // Update on Main thread
+                withContext(Dispatchers.Main) {
+                    _isLoadingPlaces.value = false
+                    placesList.value = mappedList
+                    android.widget.Toast.makeText(
+                        context,
+                        "Loaded ${mappedList.size} places from API",
+                        android.widget.Toast.LENGTH_SHORT
+                    ).show()
+                }
 
             } catch (e: Exception) {
-                Log.e("Location", "API Failed: ${e.message}", e)
+                Log.e("Location", "API FAILED: ${e.message}", e)
+                withContext(Dispatchers.Main) {
+                    _isLoadingPlaces.value = false
+                    android.widget.Toast.makeText(
+                        context,
+                        "API Error: ${e.message}",
+                        android.widget.Toast.LENGTH_LONG
+                    ).show()
+                }
             }
         }
     }
