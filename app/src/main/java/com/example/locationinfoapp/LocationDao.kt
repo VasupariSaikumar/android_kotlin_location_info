@@ -16,4 +16,13 @@ interface LocationDao {
 
     @Delete
     suspend fun delete(location: SavedLocation)
+
+    @Insert
+    suspend fun insertSignalLog(log: SignalLog)
+
+    @Query("SELECT * FROM signal_logs ORDER BY timestamp DESC")
+    fun getAllSignalLogs(): kotlinx.coroutines.flow.Flow<List<SignalLog>>
+
+    @Query("DELETE FROM signal_logs")
+    suspend fun clearSignalLogs()
 }
